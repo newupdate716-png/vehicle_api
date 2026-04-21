@@ -1,6 +1,6 @@
 # ============================================
 # 🚗 PREMIUM VEHICLE INFO API (Vercel Optimized)
-# 👑 Dev: @ftgamer2 • 💳 Src: HACKER
+# 👑 Dev: @sakib01994 • 💳 Src: HACKER
 # ============================================
 
 from flask import Flask, request, jsonify
@@ -14,8 +14,8 @@ app = Flask(__name__)
 # ==================== CONFIGURATION ====================
 DEBUG_MODE = False
 REQUEST_TIMEOUT = 25 # Vercel has a 30s limit for hobby tier
-DEVELOPER = "@ftgamer2"
-CREDIT = "HACKER"
+DEVELOPER = "@sakib01994"
+CREDIT = "SB-SAKIB @sakib01994"
 
 PRIMARY_API_URL = "https://prosnal-vehicle.gauravcyber0.workers.dev/?vehicle={}"
 HOMEPAGE_URL = "https://vahan.parivahan.gov.in/vahanservice/vahan/ui/statevalidation/homepage.xhtml?statecd=Mzc2MzM2MzAzNjY0MzIzODM3NjIzNjY0MzY2MjM3NDQ0Yw=="
@@ -137,7 +137,7 @@ def index():
     return jsonify({
         "status": "online",
         "message": "Vehicle Mobile Extracter API",
-        "usage": "/fetch?vehicle=REG_NUMBER",
+        "usage": " CONTACT OWNERS,, ",
         "owner": DEVELOPER
     })
 
