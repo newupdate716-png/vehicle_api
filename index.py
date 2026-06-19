@@ -137,7 +137,7 @@ def index():
     return jsonify({
         "status": "online",
         "message": "Vehicle Mobile Extracter API",
-        "usage": " CONTACT OWNERS,, ",
+        "usage": " CONTACT OWNER,, ",
         "owner": DEVELOPER
     })
 
