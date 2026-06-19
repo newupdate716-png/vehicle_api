@@ -1,580 +1,295 @@
-# ============================================
-# 🚗 PREMIUM VEHICLE & CHALLAN INFO API (White-Labeled)
-# 👑 Dev: @sakib01994 • 💳 Src: Custom Premium Gateway
-# ============================================
-
 from flask import Flask, request, jsonify
 import requests
 import re
-import json
-import hashlib
 import time
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False
 
-# ==================== CONFIGURATION ====================
-DEBUG_MODE = False
-REQUEST_TIMEOUT = 25
-DEVELOPER = "@sakib01994"
-CREDIT = "SB-SAKIB @sakib01994"
-BASE_URL = "https://vahanx.in"
-CACHE_DURATION = 300  # 5 minutes cache
+API_KEY = "TVB_FULL_52F4672E"
+API_URL = "https://techvishalboss.com/api/v1/lookup.php"
 
-# Enhanced Memory Cache with TTL
-cache = {}
-cache_timestamps = {}
-
-# ==================== CACHE MANAGEMENT ====================
-
-def get_from_cache(key):
-    """Get cached data with TTL check"""
-    if key in cache and key in cache_timestamps:
-        if time.time() - cache_timestamps[key] < CACHE_DURATION:
-            return cache[key]
-        else:
-            # Clear expired cache
-            del cache[key]
-            del cache_timestamps[key]
-    return None
-
-def set_to_cache(key, data):
-    """Store data in cache with timestamp"""
-    cache[key] = data
-    cache_timestamps[key] = time.time()
-
-# ==================== CLEANING & FILTERING UTILITIES ====================
-
-def sanitize_text(text):
-    """Remove source website traces and clean text"""
-    if not text:
-        return ""
-    
-    # Remove specific source traces
-    text = re.sub(r'vahanx\.in', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'vahanx', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'support@\S*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'https?://\S*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'telegram\.me\S*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'@\S+', '', text, flags=re.IGNORECASE)
-    
-    # Clean extra spaces, dashes, colons
-    text = re.sub(r'[:||\-–—\s]+$', '', text).strip()
-    text = re.sub(r'^[:||\-–—\s]+', '', text).strip()
-    
-    return text.strip()
-
-def is_junk_field(key, val):
-    """Filter out junk/branding fields"""
-    junk_keywords = ['vahanx', 'support@', 'telegram', 'channel', 'website', 
-                     'developer', 'copyright', 'contact us', 'copyright', 
-                     'all rights', 'reserved', 'powered by', 'visit us']
-    combined = f"{key} {val}".lower()
-    return any(kw in combined for kw in junk_keywords)
-
-def format_indian_currency(text):
-    """Format Indian currency values"""
-    if not text:
-        return text
-    # Remove any non-numeric characters except decimal
-    cleaned = re.sub(r'[^\d.]', '', text)
-    if cleaned:
-        try:
-            value = float(cleaned)
-            return f"₹{value:,.2f}"
-        except:
-            pass
-    return text
-
-# ==================== ADVANCED PARSER ====================
-
-def extract_all_details(html_content, is_challan=False):
-    """
-    Advanced scraping of ALL data points from HTML
-    """
-    extracted_data = {}
-    
+def get_vehicle_from_vahanx(rc):
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
-        
-        # 1. Extract from ALL Tables
-        for table in soup.find_all('table'):
-            rows = table.find_all('tr')
-            for row in rows:
-                cols = row.find_all(['td', 'th'])
-                if len(cols) >= 2:
-                    raw_key = cols[0].get_text(" ", strip=True)
-                    raw_val = cols[1].get_text(" ", strip=True)
-                    
-                    # Clean but preserve important data
-                    key = sanitize_text(raw_key)
-                    val = sanitize_text(raw_val)
-                    
-                    if key and val and not is_junk_field(raw_key, raw_val):
-                        # Format currency if applicable
-                        if any(word in key.lower() for word in ['amount', 'fine', 'penalty', 'fee', 'tax']):
-                            val = format_indian_currency(val)
-                        extracted_data[key] = val
-
-        # 2. Extract from Div-based Key-Value pairs
-        for element in soup.find_all(['div', 'li', 'p', 'span']):
-            # Check for structured data
-            text = element.get_text(strip=True)
-            
-            # Look for key-value patterns
-            patterns = [
-                r'([^:—–\n]+)[:—–]\s*([^:—–\n]+)',
-                r'([^:—–\n]+)\s+[—–]\s+([^:—–\n]+)',
-                r'([^:—–\n]+)\s*:\s*([^:—–\n]+)'
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, text)
-                for match in matches:
-                    if len(match) == 2:
-                        raw_key = match[0].strip()
-                        raw_val = match[1].strip()
-                        
-                        key = sanitize_text(raw_key)
-                        val = sanitize_text(raw_val)
-                        
-                        if key and val and not is_junk_field(raw_key, raw_val):
-                            # Clean up email-like values
-                            if '@' in val and 'support' in val.lower():
-                                continue
-                            extracted_data[key] = val
-
-        # 3. Extract from Input fields (hidden values)
-        for input_tag in soup.find_all('input'):
-            if input_tag.get('type') == 'hidden' or input_tag.get('type') == 'text':
-                name = input_tag.get('name', '')
-                value = input_tag.get('value', '')
-                if name and value and len(value) >= 4:
-                    # Check if it's a mobile number or important data
-                    if re.match(r'[6-9]\d{9}', value):
-                        extracted_data["Mobile Number"] = value
-                    elif name.lower() not in ['_token', '_method', 'csrf']:
-                        key = sanitize_text(name.replace('_', ' ').title())
-                        val = sanitize_text(value)
-                        if key and val and not is_junk_field(key, val):
-                            extracted_data[key] = val
-
-        # 4. Special extraction for mobile numbers
-        # Pattern for Indian mobile numbers
-        mobile_patterns = [
-            r'(?:Mobile|Phone|Contact|WhatsApp|📱|📞)\s*(?:No|Number)?\s*[:—–]?\s*([6-9]\d{9})',
-            r'value="([6-9]\d{9})"',
-            r'>([6-9]\d{9})<',
-            r'\b([6-9]\d{9})\b'
-        ]
-        
-        for pattern in mobile_patterns:
-            matches = re.findall(pattern, html_content)
-            if matches and "Mobile Number" not in extracted_data:
-                extracted_data["Mobile Number"] = matches[0]
-                break
-
-        # 5. Extract Vehicle Registration details specifically
-        reg_patterns = {
-            'Registration Date': r'(?:Reg(?:istration)?\s*Date|Date of Registration)\s*[:—–]?\s*(\d{2}[-/]\d{2}[-/]\d{4})',
-            'Registration Number': r'(?:Reg(?:istration)?\s*(?:No|Number)?)\s*[:—–]?\s*([A-Z0-9]{6,})',
-            'Chassis Number': r'(?:Chassis\s*(?:No|Number)?)\s*[:—–]?\s*([A-Z0-9]{10,})',
-            'Engine Number': r'(?:Engine\s*(?:No|Number)?)\s*[:—–]?\s*([A-Z0-9]{6,})',
-            'Owner Name': r'(?:Owner\s*(?:Name)?)\s*[:—–]?\s*([A-Za-z\s\.]+)',
-            'Vehicle Class': r'(?:Vehicle\s*Class|Class)\s*[:—–]?\s*([A-Za-z\s]+)',
-            'Fuel Type': r'(?:Fuel\s*Type)\s*[:—–]?\s*([A-Za-z\s]+)',
-            'Colour': r'(?:Colour|Color)\s*[:—–]?\s*([A-Za-z\s]+)',
-            'Manufacturer': r'(?:Manufacturer|Maker)\s*[:—–]?\s*([A-Za-z\s\.]+)',
-            'Model': r'(?:Model)\s*[:—–]?\s*([A-Za-z0-9\s\-]+)'
+        url = f"https://vahanx.in/rc-search/{rc}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": "https://vahanx.in/rc-search"
         }
-        
-        for key, pattern in reg_patterns.items():
-            if key not in extracted_data:
-                match = re.search(pattern, html_content, re.IGNORECASE)
-                if match:
-                    extracted_data[key] = match.group(1).strip()
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 6. Challan specific extraction
-        if is_challan:
-            challan_patterns = {
-                'Challan Number': r'(?:Challan\s*(?:No|Number)?)\s*[:—–]?\s*([A-Z0-9\-]+)',
-                'Fine Amount': r'(?:Fine|Penalty|Amount)\s*[:—–]?\s*(?:₹|Rs\.?)?\s*([\d,]+\.?\d*)',
-                'Status': r'(?:Status|Payment Status)\s*[:—–]?\s*([A-Za-z\s]+)',
-                'Date': r'(?:Date|Challan Date)\s*[:—–]?\s*(\d{2}[-/]\d{2}[-/]\d{4})',
-                'Location': r'(?:Location|Place)\s*[:—–]?\s*([A-Za-z\s,]+)',
-                'Offence': r'(?:Offence|Violation)\s*[:—–]?\s*([A-Za-z\s,]+)'
+        def get_value(label):
+            try:
+                div = soup.find("span", string=label)
+                if div:
+                    parent = div.find_parent("div")
+                    if parent:
+                        p = parent.find("p")
+                        if p:
+                            return p.get_text(strip=True)
+            except:
+                pass
+            return ""
+
+        return {
+            "owner_name_vx": get_value("Owner Name"),
+            "father_name_vx": get_value("Father's Name"),
+            "maker_model_vx": get_value("Maker Model"),
+            "model_name_vx": get_value("Model Name"),
+            "fuel_type_vx": get_value("Fuel Type"),
+            "fuel_norms_vx": get_value("Fuel Norms"),
+            "reg_date_vx": get_value("Registration Date"),
+            "vehicle_class_vx": get_value("Vehicle Class"),
+            "registered_rto_vx": get_value("Registered RTO"),
+            "address_vx": get_value("Address"),
+            "city_vx": get_value("City Name"),
+            "insurance_company_vx": get_value("Insurance Company"),
+            "insurance_no_vx": get_value("Insurance No"),
+            "insurance_upto_vx": get_value("Insurance Upto") or get_value("Insurance Expiry"),
+            "fitness_upto_vx": get_value("Fitness Upto"),
+            "tax_upto_vx": get_value("Tax Upto"),
+            "financier_vx": get_value("Financier Name"),
+            "phone_vx": get_value("Phone"),
+            "owner_serial_vx": get_value("Owner Serial No"),
+            "puc_no_vx": get_value("PUC No"),
+            "puc_upto_vx": get_value("PUC Upto")
+        }
+    except:
+        return {}
+
+def get_vehicle_from_tvb(rc):
+    try:
+        params = {"key": API_KEY, "service": "vehicle", "rc": rc}
+        resp = requests.get(API_URL, params=params, timeout=15)
+        data = resp.json()
+        if data.get("status") and data.get("data", {}).get("response"):
+            r = data["data"]["response"]
+            rt = r.get("rtoData", {})
+            return {
+                "rto_name": rt.get("rtoName", ""),
+                "rto_code": rt.get("rtoCode", ""),
+                "state_name": rt.get("statename", ""),
+                "reg_authority": r.get("regAuthority", ""),
+                "chassis": r.get("chassis", ""),
+                "engine": r.get("engine", ""),
+                "reg_date": r.get("regDate", ""),
+                "manufacturer": r.get("manufacturer", ""),
+                "vehicle_model": r.get("vehicle", ""),
+                "vehicle_type": r.get("vehicleType", ""),
+                "variant": r.get("variant", ""),
+                "fuel_type": r.get("fuelType", ""),
+                "cubic_capacity": r.get("cubicCapacity", ""),
+                "seat_capacity": r.get("seatCapacity", ""),
+                "is_commercial": r.get("isCommercial", False),
+                "owner_name": r.get("owner", ""),
+                "father_name": r.get("ownerFatherName", ""),
+                "financier": r.get("financerName", ""),
+                "insurance_company": r.get("insuranceCompanyName", ""),
+                "insurance_policy": r.get("insurancePolicyNumber", ""),
+                "insurance_upto": r.get("insuranceUpto", ""),
+                "insurance_expired": r.get("insuranceExpired", False),
+                "present_address": r.get("presentAddress", ""),
+                "perm_address": r.get("permAddress", ""),
+                "pincode": r.get("pincode", ""),
+                "vehicle_class": r.get("vehicleClass", ""),
+                "pucc_number": r.get("puccNumber", ""),
+                "pucc_upto": r.get("puccValidUpto", "")
             }
-            
-            for key, pattern in challan_patterns.items():
-                if key not in extracted_data:
-                    match = re.search(pattern, html_content, re.IGNORECASE)
-                    if match:
-                        val = match.group(1).strip()
-                        if 'amount' in key.lower():
-                            val = format_indian_currency(val)
-                        extracted_data[key] = val
-
-        # 7. Additional data from meta tags
-        meta_tags = soup.find_all('meta')
-        for meta in meta_tags:
-            name = meta.get('name', '').lower()
-            content = meta.get('content', '')
-            if name and content and name not in ['viewport', 'robots', 'csrf-token']:
-                if any(keyword in name for keyword in ['author', 'title', 'description']):
-                    key = name.title().replace('_', ' ')
-                    val = sanitize_text(content)
-                    if val and not is_junk_field(key, val):
-                        extracted_data[key] = val
-
-        # 8. Extract from card-like structures
-        for card in soup.find_all(['div', 'section'], class_=re.compile(r'card|box|info|detail', re.I)):
-            card_text = card.get_text(" ", strip=True)
-            # Look for labeled data in cards
-            lines = card_text.split('\n')
-            for line in lines:
-                if ':' in line or '—' in line:
-                    parts = re.split(r'[:—–]', line, maxsplit=1)
-                    if len(parts) == 2:
-                        raw_key = parts[0].strip()
-                        raw_val = parts[1].strip()
-                        
-                        key = sanitize_text(raw_key)
-                        val = sanitize_text(raw_val)
-                        
-                        if key and val and len(key) > 2 and len(val) > 1:
-                            if not is_junk_field(raw_key, raw_val):
-                                if 'amount' in key.lower() or 'fine' in key.lower():
-                                    val = format_indian_currency(val)
-                                extracted_data[key] = val
-
-    except Exception as e:
-        # Log error but continue
+    except:
         pass
-    
-    return extracted_data
+    return {}
 
-# ==================== HEADERS & SESSION MANAGEMENT ====================
-
-def get_premium_headers():
-    """Get premium headers for request"""
-    return {
-        'Host': 'vahanx.in',
-        'Connection': 'keep-alive',
-        'sec-ch-ua': '"Chromium";v="148", "Android WebView";v="148", "Not/A)Brand";v="99"',
-        'sec-ch-ua-mobile': '?1',
-        'sec-ch-ua-platform': '"Android"',
-        'Upgrade-Insecure-Requests': '1',
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; V2310 Build/AP3A.240905.015.A2_NNCS) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.7778.215 Mobile Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'dnt': '1',
-        'X-Requested-With': 'mark.via.gp',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-User': '?1',
-        'Sec-Fetch-Dest': 'document',
-        'Referer': 'https://vahanx.in/',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
-        'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8'
+def get_mobile_9step(rc, last5):
+    session = requests.Session()
+    BASE = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
     }
 
-def create_session_from_cookie(cookie_string):
-    """Create session from cookie string"""
-    session = requests.Session()
-    if cookie_string:
+    HP = "https://vahan.parivahan.gov.in/vahanservice/vahan/ui/statevalidation/homepage.xhtml?statecd=Mzc2MzM2MzAzNjY0MzIzODM3NjIzNjY0MzY2MjM3NDQ0Yw=="
+    HB = "https://vahan.parivahan.gov.in/vahanservice/vahan/ui/statevalidation/homepage.xhtml"
+    LI = "https://vahan.parivahan.gov.in/vahanservice/vahan/ui/usermgmt/login.xhtml"
+    FR = "https://vahan.parivahan.gov.in/vahanservice/vahan/ui/balanceservice/form_reschedule_fitness.xhtml"
+
+    for attempt in range(2):
         try:
-            # Parse cookie string
-            cookies = {}
-            for item in cookie_string.split('; '):
-                if '=' in item:
-                    key, value = item.split('=', 1)
-                    cookies[key] = value
-            session.cookies.update(cookies)
+            r = session.get(HP, headers=BASE, timeout=25)
+            vs = re.search(r'<input[^>]*name="javax\.faces\.ViewState"[^>]*value="([^"]+)"', r.text)
+            if not vs: continue
+            vs = vs.group(1)
+
+            cid = "j_idt193"
+            cm = re.search(r'<div[^>]*id="(j_idt\d+)"[^>]*class="[^"]*ui-chkbox', r.text)
+            if cm: cid = cm.group(1)
+
+            AH = {
+                "Accept": "application/xml, text/xml, */*; q=0.01",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Faces-Request": "partial/ajax",
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": "https://vahan.parivahan.gov.in",
+                "Referer": HP
+            }
+
+            r = session.post(HB, headers=AH, data={
+                "javax.faces.partial.ajax": "true", "javax.faces.source": "fit_c_office_to",
+                "javax.faces.partial.execute": "fit_c_office_to", "javax.faces.behavior.event": "change",
+                "homepageformid": "homepageformid", "fit_c_office_to_input": "1", "javax.faces.ViewState": vs
+            }, timeout=25)
+            m = re.search(r'<update id="j_id1:javax\.faces\.ViewState:0"><!\[CDATA\[(.*?)\]\]></update>', r.text)
+            if m: vs = m.group(1)
+
+            r = session.post(HB, headers=AH, data={
+                "javax.faces.partial.ajax": "true", "javax.faces.source": cid,
+                "javax.faces.partial.execute": cid, "javax.faces.partial.render": "proccedHomeButtonId",
+                "javax.faces.behavior.event": "change", "homepageformid": "homepageformid",
+                f"{cid}_input": "on", "javax.faces.ViewState": vs
+            }, timeout=25)
+            m = re.search(r'<update id="j_id1:javax\.faces\.ViewState:0"><!\[CDATA\[(.*?)\]\]></update>', r.text)
+            if m: vs = m.group(1)
+
+            r = session.post(HB, headers=AH, data={
+                "javax.faces.partial.ajax": "true", "javax.faces.source": "proccedHomeButtonId",
+                "javax.faces.partial.execute": "@all", "proccedHomeButtonId": "proccedHomeButtonId",
+                "homepageformid": "homepageformid", f"{cid}_input": "on", "javax.faces.ViewState": vs
+            }, timeout=25)
+            m = re.search(r'<update id="j_id1:javax\.faces\.ViewState:0"><!\[CDATA\[(.*?)\]\]></update>', r.text)
+            if m: vs = m.group(1)
+
+            dlg = "j_idt536"
+            dm = re.search(r'id="(j_idt\d+)"[^>]*class="[^"]*ui-button', r.text)
+            if dm: dlg = dm.group(1)
+            r = session.post(HB, headers=AH, data={
+                "javax.faces.partial.ajax": "true", "javax.faces.source": dlg,
+                "javax.faces.partial.execute": "@all", dlg: dlg, "homepageformid": "homepageformid",
+                f"{cid}_input": "on", "javax.faces.ViewState": vs
+            }, timeout=25)
+            m = re.search(r'<update id="j_id1:javax\.faces\.ViewState:0"><!\[CDATA\[(.*?)\]\]></update>', r.text)
+            if m: vs = m.group(1)
+
+            r = session.get(LI + "?faces-redirect=true", headers={**BASE, "Referer": HP}, timeout=25)
+            vs = re.search(r'<input[^>]*name="javax\.faces\.ViewState"[^>]*value="([^"]+)"', r.text)
+            if not vs: continue
+            vs = vs.group(1)
+
+            fit = "j_idt506"
+            fm = re.search(r'id="(j_idt\d+)"[^>]*type="submit"', r.text)
+            if fm: fit = fm.group(1)
+            session.post(LI, headers={**BASE, "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://vahan.parivahan.gov.in", "Referer": LI + "?faces-redirect=true"}, data={
+                "loginForm": "loginForm", fit: fit, "javax.faces.ViewState": vs,
+                "fitbalcTest": "fitbalcTest", "pur_cd": "86"
+            }, timeout=25)
+
+            r = session.get(FR, headers={**BASE, "Referer": LI + "?faces-redirect=true"}, timeout=25)
+            vs = re.search(r'<input[^>]*name="javax\.faces\.ViewState"[^>]*value="([^"]+)"', r.text)
+            if not vs: continue
+            vs = vs.group(1)
+
+            r = session.post(FR, headers={**AH, "Referer": FR}, data={
+                "javax.faces.partial.ajax": "true",
+                "javax.faces.source": "balanceFeesFine:validate_dtls",
+                "javax.faces.partial.execute": "@all",
+                "javax.faces.partial.render": "balanceFeesFine:auth_panel",
+                "balanceFeesFine:validate_dtls": "balanceFeesFine:validate_dtls",
+                "balanceFeesFine": "balanceFeesFine",
+                "balanceFeesFine:tf_reg_no": rc,
+                "balanceFeesFine:tf_chasis_no": last5,
+                "javax.faces.ViewState": vs
+            }, timeout=25)
+
+            for p in [r'id="balanceFeesFine:tf_mobile"[^>]*value="(\d{10})"',
+                       r'value="(\d{10})"[^>]*id="balanceFeesFine:tf_mobile"',
+                       r'tf_mobile[^>]*value="(\d{10})"']:
+                m = re.search(p, r.text)
+                if m and m.group(1)[0] in "6789":
+                    return m.group(1)
+
+            nums = re.findall(r'\b[6-9]\d{9}\b', r.text)
+            if nums:
+                return nums[0]
         except:
             pass
-    return session
-
-# ==================== CORE FETCH LOGIC ====================
-
-def fetch_from_source(endpoint, vehicle_number, session_cookies=None):
-    """
-    Fetch data from source with retry logic
-    """
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            url = f"{BASE_URL}/{endpoint}/{vehicle_number}"
-            
-            # Create session with cookies
-            session = requests.Session()
-            if session_cookies:
-                try:
-                    for cookie in session_cookies.split('; '):
-                        if '=' in cookie:
-                            key, value = cookie.split('=', 1)
-                            session.cookies.set(key, value)
-                except:
-                    pass
-            
-            # Add headers
-            session.headers.update(get_premium_headers())
-            
-            # Make request
-            response = session.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True
-            )
-            
-            if response.status_code == 200:
-                # Check if we got valid data
-                if len(response.text) > 1000:  # Minimum content length
-                    return response.text
-                else:
-                    # Try with default session if cookie failed
-                    if attempt == 0 and session_cookies:
-                        continue
-                    return response.text
-            elif response.status_code == 429:  # Rate limit
-                time.sleep(2)
-                continue
-                
-        except Exception as e:
-            if attempt == max_retries - 1:
-                return None
-            time.sleep(1)
-            continue
-    
+        if attempt == 0:
+            time.sleep(2)
     return None
 
-def process_vehicle_data(vehicle_number, cookies=None):
-    """
-    Process vehicle data with advanced extraction
-    """
-    # Check cache first
-    cache_key = hashlib.md5(f"{vehicle_number}_{cookies}".encode()).hexdigest()
-    cached = get_from_cache(cache_key)
-    if cached:
-        return cached
-    
-    # Fetch RC details
-    rc_html = fetch_from_source("rc-search", vehicle_number, cookies)
-    rc_data = {}
-    if rc_html:
-        rc_data = extract_all_details(rc_html, is_challan=False)
-    
-    # Fetch Challan details
-    challan_html = fetch_from_source("challan-search", vehicle_number, cookies)
-    challan_data = {}
-    if challan_html:
-        challan_data = extract_all_details(challan_html, is_challan=True)
-    
-    # Handle no data case
-    if not rc_data and not challan_data:
-        result = {
-            "status": "error",
-            "message": "No data found for this vehicle number",
-            "vehicle_number": vehicle_number
-        }
-    else:
-        # Clean and structure response
-        result = {
-            "status": "success",
-            "developer": DEVELOPER,
-            "credit": CREDIT,
-            "vehicle_number": vehicle_number,
-            "registration_details": rc_data if rc_data else None,
-            "challan_details": challan_data if challan_data else None,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Remove empty values
-        if result["registration_details"] is None:
-            del result["registration_details"]
-        if result["challan_details"] is None:
-            del result["challan_details"]
-    
-    # Cache result
-    set_to_cache(cache_key, result)
-    return result
+@app.route("/api/rc", methods=["GET"])
+def lookup_vehicle():
+    rc = request.args.get("rc", "").strip().upper()
+    rc = re.sub(r'[^A-Z0-9]', '', rc)
 
-# ==================== ROUTES ====================
+    if not rc:
+        return jsonify({"success": False, "error": "RC parameter required"}), 400
 
-@app.route("/", methods=['GET'])
-def index():
-    """Home route"""
+    vx = get_vehicle_from_vahanx(rc)
+    tvb = get_vehicle_from_tvb(rc)
+
+    if not vx and not tvb:
+        return jsonify({"success": False, "error": "Vehicle not found"}), 404
+
+    chassis = tvb.get("chassis", "").replace(" ", "")
+    engine = tvb.get("engine", "")
+    last5 = chassis[-5:] if len(chassis) >= 5 else ""
+
+    mobile = None
+    if last5:
+        mobile = get_mobile_9step(rc, last5)
+
+    result = {
+        "success": True,
+        "reg_no": rc,
+        "owner_name": tvb.get("owner_name") or vx.get("owner_name_vx", ""),
+        "father_name": tvb.get("father_name") or vx.get("father_name_vx", ""),
+        "maker_model": vx.get("maker_model_vx", ""),
+        "manufacturer": tvb.get("manufacturer", ""),
+        "model": tvb.get("vehicle_model") or vx.get("model_name_vx", ""),
+        "variant": tvb.get("variant", ""),
+        "vehicle_type": tvb.get("vehicle_type", ""),
+        "vehicle_class": tvb.get("vehicle_class") or vx.get("vehicle_class_vx", ""),
+        "fuel_type": tvb.get("fuel_type") or vx.get("fuel_type_vx", ""),
+        "fuel_norms": vx.get("fuel_norms_vx", ""),
+        "cubic_capacity": tvb.get("cubic_capacity", ""),
+        "seat_capacity": tvb.get("seat_capacity", ""),
+        "is_commercial": tvb.get("is_commercial", False),
+        "reg_date": tvb.get("reg_date") or vx.get("reg_date_vx", ""),
+        "rto": tvb.get("reg_authority") or vx.get("registered_rto_vx", ""),
+        "rto_code": tvb.get("rto_code", ""),
+        "rto_name": tvb.get("rto_name", ""),
+        "state": tvb.get("state_name", ""),
+        "present_address": tvb.get("present_address") or vx.get("address_vx", ""),
+        "permanent_address": tvb.get("perm_address", ""),
+        "city": vx.get("city_vx", ""),
+        "pincode": tvb.get("pincode", ""),
+        "chassis_no": chassis,
+        "engine_no": engine,
+        "insurance_company": tvb.get("insurance_company") or vx.get("insurance_company_vx", ""),
+        "insurance_policy": tvb.get("insurance_policy") or vx.get("insurance_no_vx", ""),
+        "insurance_upto": tvb.get("insurance_upto") or vx.get("insurance_upto_vx", ""),
+        "insurance_expired": tvb.get("insurance_expired", False),
+        "fitness_upto": vx.get("fitness_upto_vx", ""),
+        "tax_upto": vx.get("tax_upto_vx", ""),
+        "financier": tvb.get("financier") or vx.get("financier_vx", ""),
+        "owner_serial": vx.get("owner_serial_vx", ""),
+        "pucc_number": tvb.get("pucc_number") or vx.get("puc_no_vx", ""),
+        "pucc_upto": tvb.get("pucc_upto") or vx.get("puc_upto_vx", ""),
+        "phone": vx.get("phone_vx", ""),
+        "mobile": mobile or "Not Available"
+    }
+
+    return jsonify(result)
+
+@app.route("/", methods=["GET"])
+def home():
     return jsonify({
         "status": "online",
-        "message": "Premium White-Labeled Vehicle Gateway",
-        "developer": DEVELOPER,
-        "credit": CREDIT,
-        "version": "2.0",
-        "endpoints": {
-            "/fetch": "GET - Fetch vehicle and challan details",
-            "/fetch/rc": "GET - Fetch only registration details",
-            "/fetch/challan": "GET - Fetch only challan details",
-            "/health": "GET - Health check"
-        },
-        "usage": "/fetch?vehicle=GJ21DB1119",
-        "example": "https://your-domain.vercel.app/fetch?vehicle=GJ21DB1119"
+        "api": "Vehicle RC Lookup with Mobile",
+        "usage": "/api/rc?rc=KA01AB1234"
     })
-
-@app.route("/health", methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "cache_size": len(cache),
-        "developer": DEVELOPER
-    })
-
-@app.route("/fetch", methods=['GET'])
-def fetch_details():
-    """
-    Main fetch endpoint - Gets both RC and Challan details
-    """
-    try:
-        # Get vehicle number
-        vehicle = request.args.get("vehicle", "").strip().upper()
-        if not vehicle:
-            return jsonify({
-                "status": "error",
-                "message": "Vehicle number is required",
-                "usage": "/fetch?vehicle=GJ21DB1119"
-            }), 400
-        
-        # Clean vehicle number
-        vehicle = re.sub(r'[^A-Z0-9]', '', vehicle)
-        if len(vehicle) < 6:
-            return jsonify({
-                "status": "error",
-                "message": "Invalid vehicle number format",
-                "vehicle_number": vehicle
-            }), 400
-        
-        # Get cookies from request
-        cookies = request.headers.get("X-Vahan-Cookie") or request.args.get("cookies", "")
-        
-        # Process data
-        result = process_vehicle_data(vehicle, cookies)
-        
-        # Check if we got an error
-        if result.get("status") == "error":
-            return jsonify(result), 404
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"An error occurred: {str(e)}",
-            "developer": DEVELOPER
-        }), 500
-
-@app.route("/fetch/rc", methods=['GET'])
-def fetch_rc_details():
-    """
-    Fetch only RC details
-    """
-    try:
-        vehicle = request.args.get("vehicle", "").strip().upper()
-        if not vehicle:
-            return jsonify({"error": "Vehicle number required"}), 400
-        
-        vehicle = re.sub(r'[^A-Z0-9]', '', vehicle)
-        if len(vehicle) < 6:
-            return jsonify({"error": "Invalid vehicle number"}), 400
-        
-        cookies = request.headers.get("X-Vahan-Cookie") or request.args.get("cookies", "")
-        
-        # Get full data first
-        full_data = process_vehicle_data(vehicle, cookies)
-        
-        if full_data.get("status") == "error":
-            return jsonify(full_data), 404
-        
-        return jsonify({
-            "status": "success",
-            "vehicle_number": vehicle,
-            "registration_details": full_data.get("registration_details", {}),
-            "developer": DEVELOPER,
-            "credit": CREDIT
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/fetch/challan", methods=['GET'])
-def fetch_challan_details():
-    """
-    Fetch only Challan details
-    """
-    try:
-        vehicle = request.args.get("vehicle", "").strip().upper()
-        if not vehicle:
-            return jsonify({"error": "Vehicle number required"}), 400
-        
-        vehicle = re.sub(r'[^A-Z0-9]', '', vehicle)
-        if len(vehicle) < 6:
-            return jsonify({"error": "Invalid vehicle number"}), 400
-        
-        cookies = request.headers.get("X-Vahan-Cookie") or request.args.get("cookies", "")
-        
-        # Get full data first
-        full_data = process_vehicle_data(vehicle, cookies)
-        
-        if full_data.get("status") == "error":
-            return jsonify(full_data), 404
-        
-        return jsonify({
-            "status": "success",
-            "vehicle_number": vehicle,
-            "challan_details": full_data.get("challan_details", {}),
-            "developer": DEVELOPER,
-            "credit": CREDIT
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/cache/clear", methods=['POST'])
-def clear_cache():
-    """Clear the cache (admin only)"""
-    # Simple security check
-    key = request.headers.get("X-Admin-Key")
-    if key != "SB_SAKIB_2024":
-        return jsonify({"error": "Unauthorized"}), 401
-    
-    cache.clear()
-    cache_timestamps.clear()
-    return jsonify({
-        "status": "success",
-        "message": "Cache cleared successfully",
-        "developer": DEVELOPER
-    })
-
-# ==================== ERROR HANDLING ====================
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({
-        "error": "Endpoint not found",
-        "available_endpoints": ["/", "/fetch", "/fetch/rc", "/fetch/challan", "/health"]
-    }), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    return jsonify({
-        "error": "Internal server error",
-        "developer": DEVELOPER
-    }), 500
-
-# ==================== MAIN ====================
 
 if __name__ == "__main__":
-    app.run(debug=DEBUG_MODE, host='0.0.0.0', port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
